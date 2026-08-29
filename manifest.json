@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "henri.clipvault",
+  "name": "ClipVault",
+  "version": "1.1.0",
+  "author": "Henri Dumortier",
+  "license": "MIT",
+  "description": "Windows 11-style clipboard manager with pinning, image and file preview, and search. Replaces the built-in clipboard overlay.",
+  "kinds": [
+    "overlay"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "overlay": "Clipboard.qml"
+  },
+  "omarchy": {
+    "clonedFrom": "omarchy.clipboard"
+  }
+}
