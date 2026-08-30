@@ -5,10 +5,13 @@
 # arguments, it snapshots the current selection itself.
 
 set -o pipefail
+umask 077
 
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy"
 IMAGE_DIR="$STATE_DIR/clipboard-images"
 mkdir -p "$IMAGE_DIR"
+chmod 700 "$IMAGE_DIR" 2>/dev/null || true
+chmod 600 "$STATE_DIR/clipboard-history.json" 2>/dev/null || true
 
 types=$(wl-paste --list-types 2>/dev/null || true)
 

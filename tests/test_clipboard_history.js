@@ -2,6 +2,8 @@
 "use strict"
 
 const assert = require("assert")
+const fs = require("fs")
+const path = require("path")
 const H = require("../ClipboardHistory.js")
 
 function test(name, fn) {
@@ -110,6 +112,14 @@ test("parseHistory ignores corrupt JSON and empty text", () => {
   assert.deepStrictEqual(H.parseHistory("nope"), [])
   assert.deepStrictEqual(H.parseHistory('[{"type":"text","text":"  "}]'), [])
   assert.strictEqual(H.parseHistory('[{"type":"text","text":"ok","pinned":true}]')[0].pinned, true)
+})
+
+test("Clipboard.qml forces plain text on every Text element", () => {
+  const qml = fs.readFileSync(path.join(__dirname, "../Clipboard.qml"), "utf8")
+  const texts = qml.match(/^\s*Text\s*\{/gm)
+  const plains = qml.match(/^\s*textFormat:\s*Text\.PlainText\s*$/gm)
+  assert.ok(texts && texts.length > 0)
+  assert.strictEqual(texts.length, plains.length)
 })
 
 console.log("all tests passed")

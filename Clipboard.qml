@@ -71,8 +71,14 @@ Item {
     if (root.opened) root.rebuildDisplay()
   }
 
+  function lockHistoryPermissions() {
+    Quickshell.execDetached(["chmod", "600", root.historyPath])
+    Quickshell.execDetached(["chmod", "700", root.home + "/.local/state/omarchy/clipboard-images"])
+  }
+
   function saveHistory() {
     historyFile.setText(JSON.stringify(root.history.slice(0, root.historyLimit), null, 2) + "\n")
+    root.lockHistoryPermissions()
   }
 
   function addClipboardEntry(entry) {
@@ -295,7 +301,10 @@ Item {
     watchChanges: true
     atomicWrites: true
     printErrors: false
-    onLoaded: root.loadHistory(text())
+    onLoaded: {
+      root.lockHistoryPermissions()
+      root.loadHistory(text())
+    }
     onLoadFailed: root.loadHistory("[]")
     onFileChanged: reload()
   }
@@ -480,6 +489,7 @@ Item {
             anchors.right: clearAllBtn.left
             anchors.verticalCenter: parent.verticalCenter
             text: root.filterText || "Search clipboard…"
+            textFormat: Text.PlainText
             color: root.foreground
             opacity: root.filterText ? 1 : 0.58
             font.family: root.fontFamily
@@ -498,6 +508,7 @@ Item {
             Text {
               anchors.centerIn: parent
               text: "🗑 Clear all"
+              textFormat: Text.PlainText
               color: root.foreground
               font.family: root.fontFamily
               font.pixelSize: Style.font.body
@@ -592,6 +603,7 @@ Item {
                       width: Math.max(0, parent.width - (row.hasPreview ? parent.height + parent.spacing : 0) - root.actionButtonSize * 2 - parent.spacing * 2)
                       height: parent.height
                       text: row.previewText
+                      textFormat: Text.PlainText
                       color: row.hasCursor ? root.selectedText : root.foreground
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.title
@@ -610,6 +622,7 @@ Item {
                       Text {
                         anchors.centerIn: parent
                         text: "📌"
+                        textFormat: Text.PlainText
                         color: row.hasCursor ? root.selectedText : root.foreground
                         font.family: root.fontFamily
                         font.pixelSize: Style.font.title
@@ -640,6 +653,7 @@ Item {
                       Text {
                         anchors.centerIn: parent
                         text: "✕"
+                        textFormat: Text.PlainText
                         color: row.hasCursor ? root.selectedText : root.foreground
                         font.family: root.fontFamily
                         font.pixelSize: Style.font.title
@@ -686,6 +700,7 @@ Item {
                 anchors.topMargin: 0
                 anchors.bottomMargin: 0
                 text: parent.activeRow ? parent.activeRow.fullText : ""
+                textFormat: Text.PlainText
                 color: root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.title
@@ -717,6 +732,7 @@ Item {
 
             Text {
               text: "󰅌"
+              textFormat: Text.PlainText
               color: root.selectedText
               opacity: 0.8
               font.family: root.fontFamily
@@ -727,6 +743,7 @@ Item {
 
             Text {
               text: root.history.length === 0 ? "Clipboard is empty" : "No matches for “" + root.filterText + "”"
+              textFormat: Text.PlainText
               color: root.foreground
               opacity: 0.7
               font.family: root.fontFamily
