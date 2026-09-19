@@ -122,4 +122,12 @@ test("Clipboard.qml forces plain text on every Text element", () => {
   assert.strictEqual(texts.length, plains.length)
 })
 
+test("Clipboard.qml does not write history through FileView atomicWrites", () => {
+  const qml = fs.readFileSync(path.join(__dirname, "../Clipboard.qml"), "utf8")
+  assert.ok(qml.includes("save-history.sh"))
+  assert.ok(qml.includes("atomicWrites: false"))
+  assert.ok(!qml.includes("historyFile.setText"))
+  assert.ok(!/atomicWrites:\s*true/.test(qml))
+})
+
 console.log("all tests passed")

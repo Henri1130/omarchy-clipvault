@@ -24,7 +24,15 @@ Item {
     ? String(manifest.__sourceDir)
     : (home + "/.config/omarchy/plugins/henri.clipvault")
   readonly property string captureScript: pluginDir + "/capture.sh"
-  property string historyPath: home + "/.local/state/omarchy/clipboard-history.json"
+  readonly property string saveScript: pluginDir + "/save-history.sh"
+  readonly property string stateDir: {
+    var xdg = Quickshell.env("XDG_STATE_HOME")
+    return (xdg && xdg.length > 0) ? (xdg + "/omarchy") : (home + "/.local/state/omarchy")
+  }
+  property string historyPath: stateDir + "/clipboard-history.json"
+  property string pendingHistory: ""
+  property bool saveQueued: false
+  property bool saving: false
   // Shares the [menu] surface tokens — themes that style the menu also
   // style the clipboard. Selected-row colors composed in the
   // singleton so consumers drop them straight into Rectangle bindings.
@@ -73,12 +81,18 @@ Item {
 
   function lockHistoryPermissions() {
     Quickshell.execDetached(["chmod", "600", root.historyPath])
-    Quickshell.execDetached(["chmod", "700", root.home + "/.local/state/omarchy/clipboard-images"])
+    Quickshell.execDetached(["chmod", "700", root.stateDir + "/clipboard-images"])
   }
 
   function saveHistory() {
-    historyFile.setText(JSON.stringify(root.history.slice(0, root.historyLimit), null, 2) + "\n")
-    root.lockHistoryPermissions()
+    root.pendingHistory = JSON.stringify(root.history.slice(0, root.historyLimit), null, 2) + "\n"
+    if (saveProc.running) {
+      root.saveQueued = true
+      return
+    }
+    root.saving = true
+    saveProc.stdinEnabled = true
+    saveProc.running = true
   }
 
   function addClipboardEntry(entry) {
@@ -295,18 +309,40 @@ Item {
     referenceItem: card
   }
 
+  Process {
+    id: saveProc
+    command: [root.saveScript]
+    stdinEnabled: true
+    onStarted: {
+      saveProc.write(root.pendingHistory)
+      saveProc.stdinEnabled = false
+    }
+    onExited: function() {
+      root.saving = false
+      if (root.saveQueued) {
+        root.saveQueued = false
+        Qt.callLater(root.saveHistory)
+      }
+    }
+  }
+
   FileView {
     id: historyFile
     path: root.historyPath
     watchChanges: true
-    atomicWrites: true
+    atomicWrites: false
     printErrors: false
     onLoaded: {
+      if (root.saving)
+        return
       root.lockHistoryPermissions()
       root.loadHistory(text())
     }
     onLoadFailed: root.loadHistory("[]")
-    onFileChanged: reload()
+    onFileChanged: {
+      if (!root.saving)
+        reload()
+    }
   }
 
   // Reap leftover stock and ClipVault watchers from a previous shell instance.
