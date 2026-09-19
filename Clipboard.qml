@@ -33,6 +33,7 @@ Item {
   property string pendingHistory: ""
   property bool saveQueued: false
   property bool saving: false
+  property bool suppressCapture: false
   // Shares the [menu] surface tokens — themes that style the menu also
   // style the clipboard. Selected-row colors composed in the
   // singleton so consumers drop them straight into Rectangle bindings.
@@ -105,6 +106,8 @@ Item {
   }
 
   function addClipboardJson(line) {
+    if (root.suppressCapture)
+      return
     root.addClipboardEntry(ClipboardHistory.parseEntryJson(line))
   }
 
@@ -260,30 +263,53 @@ Item {
     root.openSelected(row)
   }
 
+  function beginPaste() {
+    root.suppressCapture = true
+    captureResumeTimer.restart()
+    root.close()
+  }
+
   function applySelected(row) {
     if (!row) return
-    root.opened = false
-    if (row.entryType === "image") {
-      Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-paste-file", row.mime, row.path])
-    } else if (row.fullText) {
-      Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-paste-text", "--shift-insert", "--history-index", String(row.historyIndex)])
-    }
+    var entryType = String(row.entryType || "")
+    var mime = String(row.mime || "")
+    var path = String(row.path || "")
+    var historyIndex = String(row.historyIndex)
+    var fullText = String(row.fullText || "")
+    root.beginPaste()
+    Qt.callLater(function() {
+      if (entryType === "image") {
+        Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-paste-file", mime, path])
+      } else if (fullText) {
+        Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-paste-text", "--shift-insert", "--history-index", historyIndex])
+      }
+    })
   }
 
   function copySelected(row) {
     if (!row) return
-    root.opened = false
-    if (row.entryType === "image") {
-      Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-paste-file", "--copy-only", row.mime, row.path])
-    } else if (row.fullText) {
-      Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-paste-text", "--copy-only", "--history-index", String(row.historyIndex)])
-    }
+    var entryType = String(row.entryType || "")
+    var mime = String(row.mime || "")
+    var path = String(row.path || "")
+    var historyIndex = String(row.historyIndex)
+    var fullText = String(row.fullText || "")
+    root.beginPaste()
+    Qt.callLater(function() {
+      if (entryType === "image") {
+        Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-paste-file", "--copy-only", mime, path])
+      } else if (fullText) {
+        Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-paste-text", "--copy-only", "--history-index", historyIndex])
+      }
+    })
   }
 
   function openSelected(row) {
     if (!row) return
-    root.opened = false
-    Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-open", "--history-index", String(row.historyIndex)])
+    var historyIndex = String(row.historyIndex)
+    root.beginPaste()
+    Qt.callLater(function() {
+      Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-open", "--history-index", historyIndex])
+    })
   }
 
   function startWatchers() {
@@ -395,6 +421,13 @@ Item {
       if (!textWatchProc.running) textWatchProc.running = true
       if (!imageWatchProc.running) imageWatchProc.running = true
     }
+  }
+
+  Timer {
+    id: captureResumeTimer
+    interval: 700
+    repeat: false
+    onTriggered: root.suppressCapture = false
   }
 
   PanelWindow {
@@ -599,31 +632,14 @@ Item {
                   radius: root.cornerRadius
                   color: hasCursor ? root.selectedBackground : "transparent"
 
-                  MouseArea {
-                    id: rowClick
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    z: 0
-                    onPositionChanged: function(mouse) {
-                      root.selectFromPointer(row.index, row, mouse)
-                    }
-                    onClicked: {
-                      root.cursorActive = true
-                      root.selectedIndex = row.index
-                      root.activateIndex(row.index)
-                    }
-                  }
-
                   Row {
                     id: rowContent
                     anchors.fill: parent
                     anchors.leftMargin: Style.space(12)
-                    anchors.rightMargin: Style.space(8)
+                    anchors.rightMargin: Style.space(8) + root.actionButtonSize * 2 + Style.space(10)
                     anchors.topMargin: Style.space(8)
                     anchors.bottomMargin: Style.space(8)
                     spacing: Style.space(10)
-                    z: 1
 
                     Image {
                       visible: row.hasPreview
@@ -636,7 +652,7 @@ Item {
                     }
 
                     Text {
-                      width: Math.max(0, parent.width - (row.hasPreview ? parent.height + parent.spacing : 0) - root.actionButtonSize * 2 - parent.spacing * 2)
+                      width: Math.max(0, parent.width - (row.hasPreview ? parent.height + parent.spacing : 0))
                       height: parent.height
                       text: row.previewText
                       textFormat: Text.PlainText
@@ -648,12 +664,35 @@ Item {
                       wrapMode: Text.NoWrap
                       verticalAlignment: Text.AlignVCenter
                     }
+                  }
+
+                  MouseArea {
+                    id: rowClick
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    preventStealing: true
+                    onPositionChanged: function(mouse) {
+                      root.selectFromPointer(row.index, row, mouse)
+                    }
+                    onClicked: {
+                      root.cursorActive = true
+                      root.selectedIndex = row.index
+                      root.activateIndex(row.index)
+                    }
+                  }
+
+                  Row {
+                    anchors.right: parent.right
+                    anchors.rightMargin: Style.space(8)
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: Style.space(4)
+                    z: 2
 
                     Item {
                       id: pinBtn
                       width: root.actionButtonSize
                       height: root.actionButtonSize
-                      anchors.verticalCenter: parent.verticalCenter
 
                       Text {
                         anchors.centerIn: parent
@@ -670,9 +709,7 @@ Item {
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         preventStealing: true
-                        onPressed: (mouse) => { mouse.accepted = true }
-                        onClicked: (mouse) => {
-                          mouse.accepted = true
+                        onClicked: {
                           root.cursorActive = true
                           root.selectedIndex = row.index
                           root.togglePinAt(row.index)
@@ -684,7 +721,6 @@ Item {
                       id: delBtn
                       width: root.actionButtonSize
                       height: root.actionButtonSize
-                      anchors.verticalCenter: parent.verticalCenter
 
                       Text {
                         anchors.centerIn: parent
@@ -701,11 +737,7 @@ Item {
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         preventStealing: true
-                        onPressed: (mouse) => { mouse.accepted = true }
-                        onClicked: (mouse) => {
-                          mouse.accepted = true
-                          root.removeDisplayIndex(row.index)
-                        }
+                        onClicked: root.removeDisplayIndex(row.index)
                       }
                     }
                   }
@@ -757,6 +789,13 @@ Item {
                 verticalAlignment: Image.AlignTop
                 asynchronous: true
                 smooth: true
+              }
+
+              MouseArea {
+                anchors.fill: parent
+                enabled: !!parent.activeRow
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.activateIndex(root.selectedIndex)
               }
             }
           }
