@@ -1,12 +1,20 @@
+// Independent of capture.sh: refuse a text record that would bloat the shell.
+// JS string length is UTF-16 code units; 1 MiB of ASCII is 1048576 units.
+var maxTextChars = 1048576
+var maxJsonChars = 2097152
+
 function normalizeEntry(value) {
-  if (typeof value === "string")
+  if (typeof value === "string") {
+    if (value.length > maxTextChars) return null
     return value.trim().length > 0 ? { type: "text", text: value, pinned: false } : null
+  }
 
   if (!value || typeof value !== "object") return null
 
   var type = String(value.type || value.kind || "")
   if (type === "text") {
     var text = String(value.text || "")
+    if (text.length > maxTextChars) return null
     return text.trim().length > 0 ? { type: "text", text: text, pinned: !!value.pinned } : null
   }
 
@@ -138,7 +146,7 @@ function hasUnpinned(history) {
 
 function parseEntryJson(line) {
   var raw = String(line || "").trim()
-  if (!raw) return null
+  if (!raw || raw.length > maxJsonChars) return null
   try { return normalizeEntry(JSON.parse(raw)) } catch (e) { return null }
 }
 
@@ -304,6 +312,8 @@ if (typeof module !== "undefined") {
     fileEntryText: fileEntryText,
     fullText: fullText,
     displayRows: displayRows,
-    displayTextLimit: displayTextLimit
+    displayTextLimit: displayTextLimit,
+    maxTextChars: maxTextChars,
+    maxJsonChars: maxJsonChars
   }
 }

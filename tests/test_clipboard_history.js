@@ -67,6 +67,26 @@ test("togglePinAt flips only the targeted row", () => {
   assert.strictEqual(history[1].pinned, false)
 })
 
+test("normalizeEntry and parseEntryJson discard oversized text", () => {
+  const huge = "x".repeat(H.maxTextChars + 1)
+  assert.strictEqual(H.normalizeEntry({ type: "text", text: huge }), null)
+  assert.strictEqual(H.normalizeEntry(huge), null)
+  assert.strictEqual(H.parseEntryJson(JSON.stringify({ type: "text", text: huge })), null)
+  assert.strictEqual(H.parseEntryJson("x".repeat(H.maxJsonChars + 1)), null)
+  assert.deepStrictEqual(H.parseHistory(JSON.stringify([{ type: "text", text: huge }])), [])
+  assert.ok(H.normalizeEntry({ type: "text", text: "ok" }))
+})
+
+test("Clipboard.qml collectors abort oversized capture records", () => {
+  const qml = fs.readFileSync(path.join(__dirname, "../Clipboard.qml"), "utf8")
+  assert.ok(qml.includes("captureJsonLimit: 2097152"))
+  assert.ok(qml.includes("raw.length > root.captureJsonLimit"))
+  assert.ok(qml.includes("text.length > root.captureJsonLimit"))
+  assert.ok(qml.includes("root.acceptCaptureChunk(data)"))
+  assert.ok(!/onStreamFinished:\s*root\.addClipboardJson\(text\)/.test(qml))
+  assert.ok(!/onRead:\s*function\(data\)\s*\{\s*root\.addClipboardJson\(data\)\s*\}/.test(qml))
+})
+
 test("capped huge text still reports pinned in displayRows", () => {
   const huge = "x".repeat(H.displayTextLimit + 50)
   const rows = H.displayRows([{ type: "text", text: huge, pinned: true }], "", 50)

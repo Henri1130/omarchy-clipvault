@@ -19,6 +19,7 @@ ClipVault is a drop-in replacement for the built-in `omarchy.clipboard` overlay.
 - Per-row **📌** pin and **✕** delete buttons, plus **Clear all** in the header
 - Uses Omarchy's existing clipboard paste helpers, so it stays on the same history file as the stock plugin
 - History and screenshot files are private (`600` / `700`); history is written under `umask 077` so a save never leaves the file world-readable; pasted text is shown as plain text, not HTML
+- Oversized clipboard payloads are dropped (1 MiB text, 10 MiB per image) before they are decoded, stored, or loaded into the overlay
 
 ## Install
 
@@ -86,6 +87,7 @@ Clipboard history in `~/.local/state/omarchy/clipboard-history.json` and image c
 omarchy plugin validate .
 node tests/test_clipboard_history.js
 bash tests/test_save_history.sh
+bash tests/test_capture_limits.sh
 ```
 
 ## Dependencies

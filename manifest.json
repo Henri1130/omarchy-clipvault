@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "henri.clipvault",
   "name": "ClipVault",
-  "version": "1.3.1",
+  "version": "1.3.2",
   "author": "Henri Dumortier",
   "license": "MIT",
   "description": "Windows 11-style clipboard manager with pinning, image and file preview, and search. Replaces the built-in clipboard overlay.",

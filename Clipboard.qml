@@ -54,6 +54,10 @@ Item {
   property int rowHeight: Math.max(Style.space(50), Style.font.body + Style.font.caption + Style.spacing.rowPaddingX * 2)
   property int historyLimit: 300
   readonly property int actionButtonSize: Math.round(rowHeight * 0.6)
+  // Must stay in lockstep with capture.sh JSON_MAX. Collectors abort above this
+  // so a huge clipboard payload cannot accumulate in the shell.
+  readonly property int captureJsonLimit: 2097152
+  property bool ignoreNextHistoryReload: false
 
   function open(payloadJson) {
     root.opened = true
@@ -87,6 +91,7 @@ Item {
 
   function saveHistory() {
     root.pendingHistory = JSON.stringify(root.history.slice(0, root.historyLimit), null, 2) + "\n"
+    root.ignoreNextHistoryReload = true
     if (saveProc.running) {
       root.saveQueued = true
       return
@@ -108,7 +113,17 @@ Item {
   function addClipboardJson(line) {
     if (root.suppressCapture)
       return
-    root.addClipboardEntry(ClipboardHistory.parseEntryJson(line))
+    var raw = String(line || "")
+    if (!raw || raw.length > root.captureJsonLimit)
+      return
+    root.addClipboardEntry(ClipboardHistory.parseEntryJson(raw))
+  }
+
+  function acceptCaptureChunk(data) {
+    var raw = String(data || "")
+    if (!raw || raw.length > root.captureJsonLimit)
+      return
+    root.addClipboardJson(raw)
   }
 
   function requestClearHistory() {
@@ -241,6 +256,7 @@ Item {
 
   function selectFromPointer(index, item, mouse) {
     if (!pointerGate.moved(item, mouse)) return
+    if (root.cursorActive && root.selectedIndex === index) return
     root.cursorActive = true
     root.selectedIndex = index
   }
@@ -333,6 +349,7 @@ Item {
   PointerMoveGate {
     id: pointerGate
     referenceItem: card
+    threshold: 3
   }
 
   Process {
@@ -345,6 +362,7 @@ Item {
     }
     onExited: function() {
       root.saving = false
+      historyQuietTimer.restart()
       if (root.saveQueued) {
         root.saveQueued = false
         Qt.callLater(root.saveHistory)
@@ -359,15 +377,21 @@ Item {
     atomicWrites: false
     printErrors: false
     onLoaded: {
-      if (root.saving)
+      if (root.saving || root.ignoreNextHistoryReload || historyQuietTimer.running) {
+        root.lockHistoryPermissions()
         return
+      }
       root.lockHistoryPermissions()
       root.loadHistory(text())
     }
     onLoadFailed: root.loadHistory("[]")
     onFileChanged: {
-      if (!root.saving)
-        reload()
+      if (root.saving || root.ignoreNextHistoryReload || historyQuietTimer.running) {
+        root.ignoreNextHistoryReload = false
+        root.lockHistoryPermissions()
+        return
+      }
+      reload()
     }
   }
 
@@ -388,7 +412,15 @@ Item {
     command: [root.captureScript]
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.addClipboardJson(text)
+      onDataChanged: {
+        if (text.length > root.captureJsonLimit)
+          currentProc.running = false
+      }
+      onStreamFinished: {
+        if (text.length > root.captureJsonLimit)
+          return
+        root.addClipboardJson(text)
+      }
     }
   }
 
@@ -397,7 +429,7 @@ Item {
     command: ["setpriv", "--pdeathsig", "TERM", "wl-paste", "--type", "text", "--watch", root.captureScript, "text"]
     onExited: watchRestartTimer.restart()
     stdout: SplitParser {
-      onRead: function(data) { root.addClipboardJson(data) }
+      onRead: function(data) { root.acceptCaptureChunk(data) }
     }
   }
 
@@ -406,7 +438,7 @@ Item {
     command: ["setpriv", "--pdeathsig", "TERM", "wl-paste", "--type", "image/png", "--watch", root.captureScript, "image/png"]
     onExited: watchRestartTimer.restart()
     stdout: SplitParser {
-      onRead: function(data) { root.addClipboardJson(data) }
+      onRead: function(data) { root.acceptCaptureChunk(data) }
     }
   }
 
@@ -428,6 +460,13 @@ Item {
     interval: 700
     repeat: false
     onTriggered: root.suppressCapture = false
+  }
+
+  Timer {
+    id: historyQuietTimer
+    interval: 250
+    repeat: false
+    onTriggered: root.ignoreNextHistoryReload = false
   }
 
   PanelWindow {
@@ -613,6 +652,7 @@ Item {
                 model: displayModel
                 clip: true
                 spacing: Style.space(4)
+                pixelAligned: true
                 boundsBehavior: Flickable.StopAtBounds
 
                 delegate: Rectangle {
@@ -646,8 +686,11 @@ Item {
                       width: visible ? parent.height : 0
                       height: parent.height
                       source: row.previewImage
+                      sourceSize.width: height
+                      sourceSize.height: height
                       fillMode: Image.PreserveAspectFit
                       asynchronous: true
+                      cache: true
                       smooth: true
                     }
 
@@ -666,23 +709,8 @@ Item {
                     }
                   }
 
-                  MouseArea {
-                    id: rowClick
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    preventStealing: true
-                    onPositionChanged: function(mouse) {
-                      root.selectFromPointer(row.index, row, mouse)
-                    }
-                    onClicked: {
-                      root.cursorActive = true
-                      root.selectedIndex = row.index
-                      root.activateIndex(row.index)
-                    }
-                  }
-
                   Row {
+                    id: actionButtons
                     anchors.right: parent.right
                     anchors.rightMargin: Style.space(8)
                     anchors.verticalCenter: parent.verticalCenter
@@ -709,6 +737,9 @@ Item {
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         preventStealing: true
+                        onPositionChanged: function(mouse) {
+                          root.selectFromPointer(row.index, pinBtn, mouse)
+                        }
                         onClicked: {
                           root.cursorActive = true
                           root.selectedIndex = row.index
@@ -737,8 +768,29 @@ Item {
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         preventStealing: true
+                        onPositionChanged: function(mouse) {
+                          root.selectFromPointer(row.index, delBtn, mouse)
+                        }
                         onClicked: root.removeDisplayIndex(row.index)
                       }
+                    }
+                  }
+
+                  MouseArea {
+                    id: rowClick
+                    anchors.left: parent.left
+                    anchors.top: parent.top
+                    anchors.bottom: parent.bottom
+                    anchors.right: actionButtons.left
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onPositionChanged: function(mouse) {
+                      root.selectFromPointer(row.index, row, mouse)
+                    }
+                    onClicked: {
+                      root.cursorActive = true
+                      root.selectedIndex = row.index
+                      root.activateIndex(row.index)
                     }
                   }
                 }
@@ -785,9 +837,12 @@ Item {
                 anchors.topMargin: 0
                 anchors.bottomMargin: 0
                 source: parent.activeRow ? parent.activeRow.previewImage : ""
+                sourceSize.width: width
+                sourceSize.height: height
                 fillMode: Image.PreserveAspectFit
                 verticalAlignment: Image.AlignTop
                 asynchronous: true
+                cache: true
                 smooth: true
               }
 
