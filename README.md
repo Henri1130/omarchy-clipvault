@@ -17,9 +17,11 @@ ClipVault is a drop-in replacement for the built-in `omarchy.clipboard` overlay.
 - Unpinned history also persists across reboots (hybrid model)
 - Two-pane popup: filtered list on the left, full preview on the right
 - Per-row **📌** pin and **✕** delete buttons, plus **Clear all** in the header
-- Uses Omarchy's existing clipboard paste helpers, so it stays on the same history file as the stock plugin
+- Shares the stock plugin's history file; pasting goes through the plugin's own `paste.sh`, which copies the exact entry and pastes it back into the window you were working in
+- Reliable mouse use: clicks on a row always paste that row, scrolling is smooth, and pinning or deleting does not make the list jump
 - History and screenshot files are private (`600` / `700`); history is written under `umask 077` so a save never leaves the file world-readable; pasted text is shown as plain text, not HTML
 - Oversized clipboard payloads are dropped (1 MiB text, 10 MiB per image) before they are decoded, stored, or loaded into the overlay
+- Stored clipboard images are capped at 64 MiB in total; evicted, deleted, and cleared image files are removed from the cache. Only plugin-created files under `clipboard-images/` are ever deleted.
 
 ## Install
 
@@ -48,16 +50,20 @@ omarchy restart shell
 | Action | How |
 | --- | --- |
 | Open / close | `Super+Ctrl+V` |
-| Filter | start typing |
+| Filter | start typing right away, or click the search box to edit the text (caret, mouse selection) |
+| Clear search | `Ctrl+U`, or `Esc` |
 | Paste selected | `Enter` or click the row |
 | Copy selected (no paste) | `Shift+Enter` |
 | Open file / image | `Alt+Enter` |
 | Pin / unpin | `Alt+P` or click **📌** |
 | Delete one item | `Delete` or click **✕** |
+| Move in list | `↑` `↓`, `Page Up` / `Page Down`, `Home` / `End`, mouse wheel or touchpad |
 | Clear unpinned items | `Shift+Delete` or **Clear all** (asks first) |
-| Close / clear search | `Esc` |
+| Close | `Esc` (first press clears a non-empty search) |
 
-Pinned items float to the top. **Clear all** removes only unpinned entries.
+Inside the search box, `Delete` removes the selected list item only when the caret is at the end of the text and nothing is selected; otherwise it deletes text. `Home` / `End` move through the list; `Shift+Home` / `Shift+End` select text in the search box.
+
+Pinned items float to the top (the next time the popup opens or you search; while it is open a newly pinned row stays where it is so your next click still hits what you aim at). **Clear all** removes only unpinned entries.
 
 ## Update
 
@@ -88,6 +94,9 @@ omarchy plugin validate .
 node tests/test_clipboard_history.js
 bash tests/test_save_history.sh
 bash tests/test_capture_limits.sh
+bash tests/test_image_store.sh
+node tests/test_mouse_paste.js
+bash tests/test_paste_helper.sh
 ```
 
 ## Dependencies
@@ -95,9 +104,29 @@ bash tests/test_capture_limits.sh
 Provided by Omarchy; nothing extra to install:
 
 - `wl-clipboard` (`wl-paste` / `wl-copy`)
+- `wtype` and `hyprctl` (paste and refocus)
 - `jq`
 - `setpriv` (util-linux)
 - Quickshell / Qt image support
+
+## Changelog
+
+### 1.4.2
+- The header search is now a real text box: click it for a caret, select text with the mouse, edit anywhere in the filter. Typing right after opening still filters, and arrow/Page/Home/End/Enter/Esc/Delete/Alt+P keep driving the list.
+
+### 1.4.1
+- Fix: the history file watcher re-applied file permissions on every reload, and each permission change triggered another reload — hundreds per second. While the popup was open this rebuilt the list constantly, snapping the selection/scroll back to the top and making hover, clicks and scrolling erratic (also wasted CPU while closed). Permissions are now set once at startup and identical reloads are ignored.
+- Scrolling is back to native Qt wheel/touchpad scrolling (smooth, kinetic); row clicks stay protected with `preventStealing`.
+
+### 1.4.0
+- Fix: clicking a row sometimes did nothing because the list could take over the click as a drag; row clicks now use `preventStealing`. (1.4.0 also replaced wheel scrolling with row jumps; 1.4.1 restored native scrolling.)
+- Fix: a mouse paste could land in the window under the pointer instead of the one you were typing in. ClipVault remembers the focused window when it opens and refocuses it before pasting.
+- Fix: paste now pipes the exact entry from memory to `wl-copy` (new `paste.sh`) instead of re-reading `clipboard-history.json` by index, so a paste right after pin/delete/copy can no longer pick the wrong or no entry.
+- Pin and delete update the list in place, so the rows under the pointer no longer jump.
+- Fix: popup rendered all black after the Qt 6.12 / Quickshell 0.3.2 update (QtQuick's new `Color` type shadowed the theme singleton); colors now use `Commons.Color` like the stock plugins.
+
+### 1.3.3
+- Stored clipboard images are capped at 64 MiB in total; evicted, deleted and cleared images are removed from the cache (`prune-images.sh`).
 
 ## License
 

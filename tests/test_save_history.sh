@@ -22,4 +22,8 @@ printf '{"secret":"other"}\n' | "$root/save-history.sh"
 test "$(stat -c '%a' "$history")" = "600"
 grep -q other "$history"
 
+# Non-array JSON must not abort the post-write image sweep.
+printf '[]\n' | "$root/save-history.sh"
+test "$(stat -c '%a' "$history")" = "600"
+
 echo "ok  save-history.sh keeps mode 600"

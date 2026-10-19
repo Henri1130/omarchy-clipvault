@@ -5,3 +5,8 @@ __pycache__/
 node_modules/
 clipboard-software-review.txt
 clipvault-README.md
+*.bak
+*.bak-*
+clipboard-history*.json
+clipboard-images/
+*.log

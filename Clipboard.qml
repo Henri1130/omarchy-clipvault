@@ -1,8 +1,10 @@
 import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
+import Quickshell.Hyprland
 import QtQuick
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "ClipboardHistory.js" as ClipboardHistory
 
@@ -25,6 +27,8 @@ Item {
     : (home + "/.config/omarchy/plugins/henri.clipvault")
   readonly property string captureScript: pluginDir + "/capture.sh"
   readonly property string saveScript: pluginDir + "/save-history.sh"
+  readonly property string pruneScript: pluginDir + "/prune-images.sh"
+  readonly property string pasteScript: pluginDir + "/paste.sh"
   readonly property string stateDir: {
     var xdg = Quickshell.env("XDG_STATE_HOME")
     return (xdg && xdg.length > 0) ? (xdg + "/omarchy") : (home + "/.local/state/omarchy")
@@ -37,13 +41,13 @@ Item {
   // Shares the [menu] surface tokens — themes that style the menu also
   // style the clipboard. Selected-row colors composed in the
   // singleton so consumers drop them straight into Rectangle bindings.
-  property color background: Color.menu.background
-  property color foreground: Color.menu.text
-  property color border: Color.menu.border
+  property color background: Commons.Color.menu.background
+  property color foreground: Commons.Color.menu.text
+  property color border: Commons.Color.menu.border
   property var borderSpec: Border.surfaceSpec("menu", "border", border, Math.max(1, Style.space(2)))
-  property color scrim: Color.menu.scrim
-  property color selectedBackground: Color.menu.selectedBackground
-  property color selectedText: Color.menu.selectedText
+  property color scrim: Commons.Color.menu.scrim
+  property color selectedBackground: Commons.Color.menu.selectedBackground
+  property color selectedText: Commons.Color.menu.selectedText
   readonly property int cornerRadius: Style.cornerRadius
   property string fontFamily: Style.font.menuFamily
   property int contentMargin: Style.spacing.panelPadding
@@ -58,15 +62,101 @@ Item {
   // so a huge clipboard payload cannot accumulate in the shell.
   readonly property int captureJsonLimit: 2097152
   property bool ignoreNextHistoryReload: false
+  // Window that had focus when the overlay opened; paste.sh refocuses it so a
+  // mouse click cannot paste into whatever window sits under the pointer.
+  property string targetWindow: ""
+  property string lastWindow: ""
+  property string pendingPasteText: ""
+  // Raw text of the last history load; identical reloads are ignored.
+  property string lastLoadedRaw: ""
+
+  function currentWindowAddress() {
+    var toplevel = Hyprland.activeToplevel
+    var address = ClipboardHistory.normalizeWindowAddress(toplevel ? toplevel.address : "")
+    return address || root.lastWindow
+  }
 
   function open(payloadJson) {
+    root.targetWindow = root.currentWindowAddress()
     root.opened = true
     root.filterText = ""
     root.selectedIndex = 0
     root.cursorActive = true
     root.disarmPointer()
     root.rebuildDisplay()
-    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+    Qt.callLater(function() { root.focusSearch() })
+  }
+
+  // Keyboard focus lives in the header search box so its caret and mouse text
+  // selection work; typing on open still filters because it is focused then.
+  function focusSearch() {
+    if (root.opened) searchInput.forceActiveFocus()
+  }
+
+  onFilterTextChanged: {
+    if (searchInput.text !== root.filterText) searchInput.text = root.filterText
+  }
+
+  // Shared by the search box (fromInput) and the fallback key catcher. Text
+  // editing keys are left to the TextInput; list keys behave as before.
+  function handleKey(event, fromInput) {
+    if (root.clearConfirmOpen) {
+      clearConfirm.handleKey(event)
+      event.accepted = true
+      return
+    }
+
+    var shift = event.modifiers & Qt.ShiftModifier
+    if (event.key === Qt.Key_Escape) {
+      if (root.filterText) root.setFilter("")
+      else root.close()
+      event.accepted = true
+    } else if (event.key === Qt.Key_U && event.modifiers === Qt.ControlModifier) {
+      root.setFilter("")
+      event.accepted = true
+    } else if (!fromInput && Util.editsFilter(event, root.filterText)) {
+      root.setFilter(Util.editedFilter(event, root.filterText))
+      event.accepted = true
+    } else if (event.key === Qt.Key_Delete) {
+      if (shift) {
+        root.requestClearHistory()
+      } else if (fromInput && (searchInput.selectedText.length > 0 || searchInput.cursorPosition < searchInput.text.length)) {
+        return
+      } else {
+        root.removeDisplayIndex(root.selectedIndex)
+      }
+      event.accepted = true
+    } else if (event.key === Qt.Key_Up) {
+      root.select(-1)
+      event.accepted = true
+    } else if (event.key === Qt.Key_Down) {
+      root.select(1)
+      event.accepted = true
+    } else if (event.key === Qt.Key_PageUp) {
+      root.select(-6)
+      event.accepted = true
+    } else if (event.key === Qt.Key_PageDown) {
+      root.select(6)
+      event.accepted = true
+    } else if (event.key === Qt.Key_Home && !shift) {
+      root.selectAbsolute(0)
+      event.accepted = true
+    } else if (event.key === Qt.Key_End && !shift) {
+      root.selectAbsolute(displayModel.count - 1)
+      event.accepted = true
+    } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+      if (root.cursorActive && (event.modifiers & Qt.AltModifier)) root.openIndex(root.selectedIndex)
+      else if (root.cursorActive && shift) root.copyIndex(root.selectedIndex)
+      else if (root.cursorActive) root.activateIndex(root.selectedIndex)
+      else if (displayModel.count > 0) root.cursorActive = true
+      event.accepted = true
+    } else if (event.key === Qt.Key_P && (event.modifiers & Qt.AltModifier)) {
+      root.togglePin()
+      event.accepted = true
+    } else if (!fromInput && event.text && event.text.length === 1 && event.text.charCodeAt(0) >= 32 && event.text.charCodeAt(0) !== 127) {
+      root.setFilter(root.filterText + event.text)
+      event.accepted = true
+    }
   }
 
   function close() {
@@ -80,8 +170,22 @@ Item {
   }
 
   function loadHistory(raw) {
-    root.history = ClipboardHistory.parseHistory(raw)
+    var text = String(raw || "")
+    if (text === root.lastLoadedRaw) return
+    root.lastLoadedRaw = text
+    var parsed = ClipboardHistory.parseHistory(raw)
+    var limited = ClipboardHistory.limitHistory(parsed, root.historyLimit)
+    root.pruneOrphanImages(parsed, limited)
+    root.history = limited
     if (root.opened) root.rebuildDisplay()
+  }
+
+  function pruneOrphanImages(previous, next) {
+    var names = ClipboardHistory.orphanedManagedImageNames(previous, next)
+    if (!names || names.length === 0) return
+    var cmd = [root.pruneScript, "--remove"]
+    for (var i = 0; i < names.length; i++) cmd.push(String(names[i]))
+    Quickshell.execDetached(cmd)
   }
 
   function lockHistoryPermissions() {
@@ -89,8 +193,12 @@ Item {
     Quickshell.execDetached(["chmod", "700", root.stateDir + "/clipboard-images"])
   }
 
-  function saveHistory() {
-    root.pendingHistory = JSON.stringify(root.history.slice(0, root.historyLimit), null, 2) + "\n"
+  function saveHistory(previous) {
+    var before = previous === undefined ? root.history : previous
+    root.history = ClipboardHistory.limitHistory(root.history, root.historyLimit)
+    root.pruneOrphanImages(before, root.history)
+    root.pendingHistory = JSON.stringify(root.history, null, 2) + "\n"
+    root.lastLoadedRaw = root.pendingHistory
     root.ignoreNextHistoryReload = true
     if (saveProc.running) {
       root.saveQueued = true
@@ -105,8 +213,9 @@ Item {
     var normalized = ClipboardHistory.normalizeEntry(entry)
     if (!normalized) return
 
-    root.history = ClipboardHistory.addEntry(root.history, normalized, root.historyLimit)
-    root.saveHistory()
+    var previous = root.history
+    root.history = ClipboardHistory.addEntry(previous, normalized, root.historyLimit)
+    root.saveHistory(previous)
     if (root.opened) root.rebuildDisplay()
   }
 
@@ -135,42 +244,63 @@ Item {
   function cancelClearHistory() {
     root.clearConfirmOpen = false
     root.disarmPointer()
-    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+    Qt.callLater(function() { root.focusSearch() })
   }
 
   function confirmClearHistory() {
-    root.history = ClipboardHistory.clearUnpinned(root.history)
-    root.saveHistory()
+    var previous = root.history
+    root.history = ClipboardHistory.clearUnpinned(previous)
+    root.saveHistory(previous)
     root.selectedIndex = 0
     root.cursorActive = false
     root.disarmPointer()
     root.clearConfirmOpen = false
     root.rebuildDisplay()
-    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+    Qt.callLater(function() { root.focusSearch() })
   }
 
   function removeDisplayIndex(index) {
     if (index < 0 || index >= displayModel.count) return
 
-    var row = displayModel.get(index)
-    root.history = ClipboardHistory.removeEntryAt(root.history, row.historyIndex)
-    root.saveHistory()
+    var removed = displayModel.get(index).historyIndex
+    var previous = root.history
+    root.history = ClipboardHistory.removeEntryAt(previous, removed)
+    root.saveHistory(previous)
 
-    if (displayModel.count <= 1) {
+    // Update rows in place: a full rebuild resets the view and shifts rows
+    // under the pointer, so the next click lands on a different item.
+    displayModel.remove(index)
+    for (var i = 0; i < displayModel.count; i++) {
+      var current = displayModel.get(i).historyIndex
+      var next = ClipboardHistory.historyIndexAfterRemoval(current, removed)
+      if (next !== current) displayModel.setProperty(i, "historyIndex", next)
+    }
+
+    if (displayModel.count === 0) {
       root.selectedIndex = 0
       root.cursorActive = false
-    } else if (root.selectedIndex >= displayModel.count - 1) {
-      root.selectedIndex = displayModel.count - 2
+    } else if (root.selectedIndex >= displayModel.count) {
+      root.selectedIndex = displayModel.count - 1
     }
 
     root.disarmPointer()
-    root.rebuildDisplay()
+    root.focusSearch()
   }
 
   function togglePinHistory(historyIndex) {
     root.history = ClipboardHistory.togglePinAt(root.history, historyIndex)
     root.saveHistory()
-    if (root.opened) root.rebuildDisplay(historyIndex)
+    if (!root.opened) return
+
+    // Flip the pin in place and keep the row where it is while the popup is
+    // open; pinned items move to the top on the next open or search.
+    var entry = root.history[historyIndex]
+    for (var i = 0; i < displayModel.count; i++) {
+      if (displayModel.get(i).historyIndex === historyIndex) {
+        displayModel.setProperty(i, "pinned", !!(entry && entry.pinned))
+        break
+      }
+    }
   }
 
   function togglePinAt(index) {
@@ -285,38 +415,38 @@ Item {
     root.close()
   }
 
-  function applySelected(row) {
+  // The exact entry comes from in-memory history (the list was built from it),
+  // never from the capped display row or a history-file lookup by index.
+  function runPaste(row, copyOnly) {
     if (!row) return
-    var entryType = String(row.entryType || "")
-    var mime = String(row.mime || "")
-    var path = String(row.path || "")
-    var historyIndex = String(row.historyIndex)
-    var fullText = String(row.fullText || "")
+    var request = ClipboardHistory.pasteRequest(root.history, row.historyIndex)
+    var window = root.targetWindow
     root.beginPaste()
+    if (!request) return
+
+    var cmd = [root.pasteScript]
+    if (copyOnly) cmd.push("--copy-only")
+    else if (window) cmd.push("--window", window)
+
     Qt.callLater(function() {
-      if (entryType === "image") {
-        Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-paste-file", mime, path])
-      } else if (fullText) {
-        Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-paste-text", "--shift-insert", "--history-index", historyIndex])
+      if (request.kind === "image") {
+        Quickshell.execDetached(cmd.concat(["--file", request.mime, request.path]))
+        return
       }
+      if (pasteProc.running) return
+      root.pendingPasteText = request.text
+      pasteProc.command = cmd.concat(["--text"])
+      pasteProc.stdinEnabled = true
+      pasteProc.running = true
     })
   }
 
+  function applySelected(row) {
+    root.runPaste(row, false)
+  }
+
   function copySelected(row) {
-    if (!row) return
-    var entryType = String(row.entryType || "")
-    var mime = String(row.mime || "")
-    var path = String(row.path || "")
-    var historyIndex = String(row.historyIndex)
-    var fullText = String(row.fullText || "")
-    root.beginPaste()
-    Qt.callLater(function() {
-      if (entryType === "image") {
-        Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-paste-file", "--copy-only", mime, path])
-      } else if (fullText) {
-        Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-paste-text", "--copy-only", "--history-index", historyIndex])
-      }
-    })
+    root.runPaste(row, true)
   }
 
   function openSelected(row) {
@@ -334,10 +464,36 @@ Item {
     initProc.running = true
   }
 
-  Component.onCompleted: root.startWatchers()
+  Component.onCompleted: {
+    root.lockHistoryPermissions()
+    root.startWatchers()
+    // Seed Hyprland.activeToplevel so the first open after a reload already
+    // knows which window to paste back into.
+    Hyprland.refreshToplevels()
+  }
   onPluginDirChanged: root.startWatchers()
 
   ListModel { id: displayModel }
+
+  Connections {
+    target: Hyprland
+    function onActiveToplevelChanged() {
+      if (root.opened) return
+      var toplevel = Hyprland.activeToplevel
+      var address = ClipboardHistory.normalizeWindowAddress(toplevel ? toplevel.address : "")
+      if (address) root.lastWindow = address
+    }
+  }
+
+  Process {
+    id: pasteProc
+    stdinEnabled: true
+    onStarted: {
+      pasteProc.write(root.pendingPasteText)
+      root.pendingPasteText = ""
+      pasteProc.stdinEnabled = false
+    }
+  }
 
   IpcHandler {
     target: "henri.clipvault"
@@ -376,19 +532,18 @@ Item {
     watchChanges: true
     atomicWrites: false
     printErrors: false
+    // Never change permissions from these handlers: that raises an inotify ATTRIB event,
+    // which fires onFileChanged again, an endless reload loop (hundreds per
+    // second) that rebuilt the open list and snapped it back to the top.
+    // Permissions are locked once at startup; the scripts write 600 anyway.
     onLoaded: {
-      if (root.saving || root.ignoreNextHistoryReload || historyQuietTimer.running) {
-        root.lockHistoryPermissions()
-        return
-      }
-      root.lockHistoryPermissions()
+      if (root.saving || root.ignoreNextHistoryReload || historyQuietTimer.running) return
       root.loadHistory(text())
     }
     onLoadFailed: root.loadHistory("[]")
     onFileChanged: {
       if (root.saving || root.ignoreNextHistoryReload || historyQuietTimer.running) {
         root.ignoreNextHistoryReload = false
-        root.lockHistoryPermissions()
         return
       }
       reload()
@@ -505,58 +660,9 @@ Item {
         id: keyCatcher
         anchors.fill: parent
         z: root.clearConfirmOpen ? 20 : 0
-        focus: true
 
         Keys.priority: Keys.BeforeItem
-        Keys.onPressed: function(event) {
-          if (root.clearConfirmOpen) {
-            if (clearConfirm.handleKey(event)) event.accepted = true
-            return
-          }
-
-          if (event.key === Qt.Key_Escape) {
-            if (root.filterText) root.setFilter("")
-            else root.close()
-            event.accepted = true
-          } else if (Util.editsFilter(event, root.filterText)) {
-            root.setFilter(Util.editedFilter(event, root.filterText))
-            event.accepted = true
-          } else if (event.key === Qt.Key_Delete) {
-            if (event.modifiers & Qt.ShiftModifier) root.requestClearHistory()
-            else root.removeDisplayIndex(root.selectedIndex)
-            event.accepted = true
-          } else if (event.key === Qt.Key_Up) {
-            root.select(-1)
-            event.accepted = true
-          } else if (event.key === Qt.Key_Down) {
-            root.select(1)
-            event.accepted = true
-          } else if (event.key === Qt.Key_PageUp) {
-            root.select(-6)
-            event.accepted = true
-          } else if (event.key === Qt.Key_PageDown) {
-            root.select(6)
-            event.accepted = true
-          } else if (event.key === Qt.Key_Home) {
-            root.selectAbsolute(0)
-            event.accepted = true
-          } else if (event.key === Qt.Key_End) {
-            root.selectAbsolute(displayModel.count - 1)
-            event.accepted = true
-          } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-            if (root.cursorActive && (event.modifiers & Qt.AltModifier)) root.openIndex(root.selectedIndex)
-            else if (root.cursorActive && (event.modifiers & Qt.ShiftModifier)) root.copyIndex(root.selectedIndex)
-            else if (root.cursorActive) root.activateIndex(root.selectedIndex)
-            else if (displayModel.count > 0) root.cursorActive = true
-            event.accepted = true
-          } else if (event.key === Qt.Key_P && (event.modifiers & Qt.AltModifier)) {
-            root.togglePin()
-            event.accepted = true
-          } else if (event.text && event.text.length === 1 && event.text.charCodeAt(0) >= 32 && event.text.charCodeAt(0) !== 127) {
-            root.setFilter(root.filterText + event.text)
-            event.accepted = true
-          }
-        }
+        Keys.onPressed: function(event) { root.handleKey(event, false) }
 
         ConfirmDialog {
           id: clearConfirm
@@ -592,17 +698,58 @@ Item {
           radius: root.cornerRadius
           color: "transparent"
 
-          Text {
+          Item {
+            id: searchBox
             anchors.left: parent.left
             anchors.right: clearAllBtn.left
+            anchors.rightMargin: Style.space(8)
             anchors.verticalCenter: parent.verticalCenter
-            text: root.filterText || "Search clipboard…"
-            textFormat: Text.PlainText
-            color: root.foreground
-            opacity: root.filterText ? 1 : 0.58
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.heading
-            elide: Text.ElideRight
+            height: parent.height
+
+            // Clicks beside the text line still focus the box (caret at end).
+            MouseArea {
+              anchors.fill: parent
+              cursorShape: Qt.IBeamCursor
+              onClicked: {
+                searchInput.forceActiveFocus()
+                searchInput.cursorPosition = searchInput.text.length
+              }
+            }
+
+            Text {
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              visible: searchInput.text.length === 0
+              text: "Search clipboard…"
+              textFormat: Text.PlainText
+              color: root.foreground
+              opacity: 0.58
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.heading
+              elide: Text.ElideRight
+            }
+
+            TextInput {
+              id: searchInput
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              color: root.foreground
+              selectionColor: root.selectedBackground
+              selectedTextColor: root.selectedText
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.heading
+              selectByMouse: true
+              activeFocusOnPress: true
+              clip: true
+              focus: true
+              Keys.priority: Keys.BeforeItem
+              Keys.onPressed: function(event) { root.handleKey(event, true) }
+              onTextChanged: {
+                if (text !== root.filterText) root.setFilter(text)
+              }
+            }
           }
 
           Item {
@@ -654,7 +801,6 @@ Item {
                 spacing: Style.space(4)
                 pixelAligned: true
                 boundsBehavior: Flickable.StopAtBounds
-
                 delegate: Rectangle {
                   id: row
                   required property int index
@@ -784,6 +930,7 @@ Item {
                     anchors.right: actionButtons.left
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
+                    preventStealing: true
                     onPositionChanged: function(mouse) {
                       root.selectFromPointer(row.index, row, mouse)
                     }

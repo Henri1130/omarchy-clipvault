@@ -41,6 +41,45 @@ test("addEntry evicts unpinned items before pinned ones", () => {
   assert.ok(!next.some((e) => e.text === "old"))
 })
 
+const managedPng = "a".repeat(64) + ".png"
+const managedJpg = "b".repeat(64) + ".jpg"
+const imageDir = "/tmp/omarchy-state/clipboard-images"
+
+test("managedImageName accepts only plugin-created basenames", () => {
+  assert.strictEqual(H.managedImageName(imageDir + "/" + managedPng), managedPng)
+  assert.strictEqual(H.managedImageName(managedJpg), managedJpg)
+  assert.strictEqual(H.managedImageName("/tmp/" + managedPng), "")
+  assert.strictEqual(H.managedImageName("/etc/passwd"), "")
+  assert.strictEqual(H.managedImageName(imageDir + "/../" + managedPng), "")
+  assert.strictEqual(H.managedImageName(imageDir + "/clipboard.XXXXXX"), "")
+  assert.strictEqual(H.managedImageName(imageDir + "/not-a-hash.png"), "")
+  assert.strictEqual(H.managedImageName("aaaa.png\n" + managedPng), "")
+})
+
+test("orphanedManagedImageNames reports evicted and cleared managed images", () => {
+  const keep = { type: "image", path: imageDir + "/" + managedPng, pinned: true }
+  const drop = { type: "image", path: imageDir + "/" + managedJpg }
+  const outside = { type: "image", path: "/tmp/" + managedPng }
+  const next = H.addEntry([keep, drop, outside], { type: "text", text: "fresh" }, 2)
+  assert.deepStrictEqual(H.orphanedManagedImageNames([keep, drop, outside], next), [managedJpg])
+
+  const cleared = H.clearUnpinned([keep, drop])
+  assert.deepStrictEqual(H.orphanedManagedImageNames([keep, drop], cleared), [managedJpg])
+
+  const removed = H.removeEntryAt([keep, drop], 1)
+  assert.deepStrictEqual(H.orphanedManagedImageNames([keep, drop], removed), [managedJpg])
+})
+
+test("orphanedManagedImageNames ignores clipboard-supplied non-managed paths", () => {
+  const before = [
+    { type: "image", path: "/etc/passwd" },
+    { type: "image", path: imageDir + "/../../.ssh/id_rsa" },
+    { type: "image", path: imageDir + "/" + managedPng }
+  ]
+  const after = H.clearUnpinned(before)
+  assert.deepStrictEqual(H.orphanedManagedImageNames(before, after), [managedPng])
+})
+
 test("clearUnpinned keeps only pins", () => {
   const next = H.clearUnpinned([
     { type: "text", text: "a", pinned: false },
@@ -148,6 +187,16 @@ test("Clipboard.qml does not write history through FileView atomicWrites", () =>
   assert.ok(qml.includes("atomicWrites: false"))
   assert.ok(!qml.includes("historyFile.setText"))
   assert.ok(!/atomicWrites:\s*true/.test(qml))
+})
+
+test("Clipboard.qml prunes managed images on evict, remove, and clear", () => {
+  const qml = fs.readFileSync(path.join(__dirname, "../Clipboard.qml"), "utf8")
+  assert.ok(qml.includes("prune-images.sh"))
+  assert.ok(qml.includes("function pruneOrphanImages"))
+  assert.ok(qml.includes("orphanedManagedImageNames"))
+  assert.ok(qml.includes("root.saveHistory(previous)"))
+  assert.ok(qml.includes("--remove"))
+  assert.strictEqual((qml.match(/root\.saveHistory\(previous\)/g) || []).length, 3)
 })
 
 console.log("all tests passed")

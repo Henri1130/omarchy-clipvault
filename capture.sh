@@ -5,11 +5,13 @@
 # arguments, it snapshots the current selection itself.
 #
 # Oversize clips are dropped, not truncated. Caps apply before text is decoded
-# or JSON-encoded and before an image is persisted.
+# or JSON-encoded and before an image is persisted. Distinct images are also
+# bounded by a 64 MiB total store; prune-images.sh evicts oldest managed files.
 
 set -o pipefail
 umask 077
 
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy"
 IMAGE_DIR="$STATE_DIR/clipboard-images"
 HISTORY="$STATE_DIR/clipboard-history.json"
@@ -18,6 +20,7 @@ IMAGE_MAX=10485760
 JSON_MAX=2097152
 TYPES_MAX=4096
 INGEST_TIMEOUT=2
+PRUNE="$SCRIPT_DIR/prune-images.sh"
 
 mkdir -p "$IMAGE_DIR"
 chmod 700 "$IMAGE_DIR" 2>/dev/null || true
@@ -75,6 +78,12 @@ emit_image() {
     rm -f "$tmp"
   else
     mv "$tmp" "$file"
+  fi
+
+  # Bound the whole image store, not just this payload. Oldest managed files
+  # go first; the file we just wrote is kept.
+  if [[ -x $PRUNE ]]; then
+    "$PRUNE" --budget "${file##*/}" || true
   fi
 
   jq -cn --arg mime "$mime" --arg path "$file" --arg captured_at "$(date +'%A %H:%M')" \

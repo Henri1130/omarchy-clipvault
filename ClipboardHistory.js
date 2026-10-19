@@ -41,6 +41,47 @@ function entryKey(entry) {
   return "text:" + String(entry.text || "")
 }
 
+// capture.sh names persisted images <sha256>.<ext> under clipboard-images/.
+// Only that basename is ever a deletion target; clipboard-supplied paths are not.
+var managedImageNamePattern = /^[0-9a-f]{64}\.(png|jpg|jpeg|webp|gif|bmp|tiff)$/
+
+function managedImageName(path) {
+  var value = String(path || "")
+  if (!value) return ""
+  if (value.indexOf("\0") >= 0 || value.indexOf("\n") >= 0 || value.indexOf("\r") >= 0) return ""
+  if (value.indexOf("..") >= 0) return ""
+  var parts = value.split("/")
+  var name = parts[parts.length - 1]
+  if (!name || name.indexOf("\\") >= 0) return ""
+  if (!managedImageNamePattern.test(name)) return ""
+  if (parts.length > 1 && parts[parts.length - 2] !== "clipboard-images") return ""
+  return name
+}
+
+function orphanedManagedImageNames(before, after) {
+  var keep = {}
+  var afterVals = Array.isArray(after) ? after : []
+  for (var i = 0; i < afterVals.length; i++) {
+    var kept = normalizeEntry(afterVals[i])
+    if (!kept || kept.type !== "image") continue
+    var keptName = managedImageName(kept.path)
+    if (keptName) keep[keptName] = true
+  }
+
+  var names = []
+  var seen = {}
+  var beforeVals = Array.isArray(before) ? before : []
+  for (var j = 0; j < beforeVals.length; j++) {
+    var old = normalizeEntry(beforeVals[j])
+    if (!old || old.type !== "image") continue
+    var name = managedImageName(old.path)
+    if (!name || keep[name] || seen[name]) continue
+    seen[name] = true
+    names.push(name)
+  }
+  return names
+}
+
 function parseHistory(raw) {
   try {
     var parsed = JSON.parse(String(raw || "[]"))
@@ -57,12 +98,49 @@ function parseHistory(raw) {
   }
 }
 
-function addEntry(history, entry, limit) {
-  var normalized = normalizeEntry(entry)
+function historyLimitValue(limit) {
   var max = limit === undefined || limit === null ? 100 : Number(limit)
   if (isNaN(max)) max = 100
-  max = Math.max(0, max)
-  if (!normalized) return Array.isArray(history) ? history.slice(0, max) : []
+  return Math.max(0, max)
+}
+
+function evictToLimit(entries, max) {
+  var next = Array.isArray(entries) ? entries : []
+  if (max <= 0) return []
+
+  // Drop oldest unpinned items first so pins survive a full history.
+  while (next.length > max) {
+    var dropped = false
+    for (var j = next.length - 1; j >= 1; j--) {
+      if (!next[j].pinned) {
+        next.splice(j, 1)
+        dropped = true
+        break
+      }
+    }
+    if (!dropped) next.pop()
+  }
+
+  return next
+}
+
+function limitHistory(history, limit) {
+  var max = historyLimitValue(limit)
+  if (max === 0) return []
+
+  var next = []
+  var values = Array.isArray(history) ? history : []
+  for (var i = 0; i < values.length; i++) {
+    var entry = normalizeEntry(values[i])
+    if (entry) next.push(entry)
+  }
+  return evictToLimit(next, max)
+}
+
+function addEntry(history, entry, limit) {
+  var normalized = normalizeEntry(entry)
+  var max = historyLimitValue(limit)
+  if (!normalized) return limitHistory(history, max)
   if (max === 0) return []
 
   var key = entryKey(normalized)
@@ -80,20 +158,7 @@ function addEntry(history, entry, limit) {
     next.push(existing)
   }
 
-  // Drop oldest unpinned items first so pins survive a full history.
-  while (next.length > max) {
-    var dropped = false
-    for (var j = next.length - 1; j >= 1; j--) {
-      if (!next[j].pinned) {
-        next.splice(j, 1)
-        dropped = true
-        break
-      }
-    }
-    if (!dropped) next.pop()
-  }
-
-  return next
+  return evictToLimit(next, max)
 }
 
 function removeEntryAt(history, index) {
@@ -221,7 +286,8 @@ function fullText(entry) {
 // The picker only ever searches and renders a prefix of an entry, so scan and
 // render just that much. A single huge paste otherwise costs hundreds of
 // megabytes of string work on every keystroke and stalls the whole shell.
-// Pasting reads the full entry back from history by index, so nothing is lost.
+// Pasting takes the full entry from the in-memory history (pasteRequest), so
+// nothing is lost.
 var displayTextLimit = 8192
 
 function cappedEntry(entry) {
@@ -292,12 +358,43 @@ function displayRows(history, query, limit) {
   return rows
 }
 
+// What to hand paste.sh for a history entry: the exact original text (never
+// the capped display text, and file:// URIs stay URIs) or an image's mime/path.
+function pasteRequest(history, index) {
+  var values = Array.isArray(history) ? history : []
+  var target = Number(index)
+  if (isNaN(target) || target < 0 || target >= values.length || Math.floor(target) !== target) return null
+  var entry = normalizeEntry(values[target])
+  if (!entry) return null
+  if (entry.type === "image") return { kind: "image", mime: entry.mime, path: entry.path }
+  return { kind: "text", text: entry.text }
+}
+
+// Hyprland window addresses arrive with or without 0x. Anything that is not a
+// bare hex address is dropped so it can never reach the Lua dispatcher.
+function normalizeWindowAddress(value) {
+  var raw = String(value === undefined || value === null ? "" : value).trim()
+  if (/^0x[0-9a-fA-F]+$/.test(raw)) return raw
+  if (/^[0-9a-fA-F]+$/.test(raw)) return "0x" + raw
+  return ""
+}
+
+// After deleting history[removed], later display rows point one slot lower.
+function historyIndexAfterRemoval(historyIndex, removed) {
+  if (historyIndex === removed) return -1
+  return historyIndex > removed ? historyIndex - 1 : historyIndex
+}
+
 if (typeof module !== "undefined") {
   module.exports = {
     normalizeEntry: normalizeEntry,
     entryKey: entryKey,
     parseHistory: parseHistory,
     addEntry: addEntry,
+    limitHistory: limitHistory,
+    managedImageName: managedImageName,
+    managedImageNamePattern: managedImageNamePattern,
+    orphanedManagedImageNames: orphanedManagedImageNames,
     removeEntryAt: removeEntryAt,
     togglePinAt: togglePinAt,
     clearHistory: clearHistory,
@@ -314,6 +411,9 @@ if (typeof module !== "undefined") {
     displayRows: displayRows,
     displayTextLimit: displayTextLimit,
     maxTextChars: maxTextChars,
-    maxJsonChars: maxJsonChars
+    maxJsonChars: maxJsonChars,
+    pasteRequest: pasteRequest,
+    normalizeWindowAddress: normalizeWindowAddress,
+    historyIndexAfterRemoval: historyIndexAfterRemoval
   }
 }
