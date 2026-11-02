@@ -46,9 +46,9 @@ chmod 700 "$img_dir"
 printf '[]\n' >"$history"
 
 # Distinct captures persist, then budget drops oldest managed files.
+mkpng="$root/tests/make_png.py"
 for i in 1 2 3 4 5 6; do
-  payload="img-$i-$(python3 -c 'import sys; sys.stdout.write("x"*20)')"
-  printf '%s' "$payload" | "$capture" image/png >/dev/null
+  python3 "$mkpng" 1 1 "$i" 0 0 | "$capture" image/png >/dev/null
 done
 bytes=$(managed_bytes)
 count=$(managed_count)
@@ -57,9 +57,9 @@ count=$(managed_count)
 [[ $count -lt 6 ]]
 
 # --remove only unlinks a validated plugin-created file in IMAGE_DIR.
-keep_payload="keep-me-clipboard-image"
-printf '%s' "$keep_payload" | "$capture" image/png >/dev/null
-keep_name="$(hash_name "$keep_payload")"
+python3 "$mkpng" 1 1 9 9 9 >"$tmp/keep.png"
+"$capture" image/png <"$tmp/keep.png" >/dev/null
+keep_name="$(sha256sum "$tmp/keep.png" | awk '{print $1 ".png"}')"
 keep_file="$img_dir/$keep_name"
 [[ -f $keep_file ]]
 
@@ -125,5 +125,18 @@ PY
 printf '%s\n' "$(cat "$history")" | "$save"
 [[ -f $tmp/$evil_name ]]
 [[ -f $outside ]]
+
+# A file entry's managed preview copy counts as referenced by the sweep.
+prev_name="$(printf '%s' 'file-preview' | sha256sum | awk '{print $1 ".png"}')"
+printf 'preview\n' >"$img_dir/$prev_name"
+touch -d '10 seconds ago' "$img_dir/$prev_name"
+python3 - "$history" "$img_dir/$prev_name" <<'PY'
+import json, sys
+json.dump([{"type": "text", "text": "file:///srv/a.png", "preview": sys.argv[2]}], open(sys.argv[1], "w"))
+PY
+printf '%s\n' "$(cat "$history")" | "$save"
+[[ -f $img_dir/$prev_name ]]
+printf '[]\n' | "$save"
+[[ ! -f $img_dir/$prev_name ]]
 
 echo "ok  image store budget and managed-file cleanup"

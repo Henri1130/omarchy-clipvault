@@ -316,7 +316,7 @@ Item {
   }
 
   function rebuildDisplay(keepHistoryIndex) {
-    var rows = ClipboardHistory.displayRows(root.history, root.filterText, 50)
+    var rows = ClipboardHistory.displayRows(root.history, root.filterText, 50, root.stateDir + "/clipboard-images")
     var keep = keepHistoryIndex === undefined ? -1 : Number(keepHistoryIndex)
 
     displayModel.clear()
@@ -827,13 +827,16 @@ Item {
                     anchors.bottomMargin: Style.space(8)
                     spacing: Style.space(10)
 
+                    // previewImage is only ever a sanitized managed copy
+                    // (see ClipboardHistory.imagePreviewPath); never the
+                    // copied file itself.
                     Image {
                       visible: row.hasPreview
                       width: visible ? parent.height : 0
                       height: parent.height
                       source: row.previewImage
-                      sourceSize.width: height
-                      sourceSize.height: height
+                      sourceSize.width: Math.max(1, height)
+                      sourceSize.height: Math.max(1, height)
                       fillMode: Image.PreserveAspectFit
                       asynchronous: true
                       cache: true
@@ -983,9 +986,10 @@ Item {
                 anchors.rightMargin: 0
                 anchors.topMargin: 0
                 anchors.bottomMargin: 0
+                // Sanitized managed copy only; decode is bounded to the pane.
                 source: parent.activeRow ? parent.activeRow.previewImage : ""
-                sourceSize.width: width
-                sourceSize.height: height
+                sourceSize.width: Math.max(1, width)
+                sourceSize.height: Math.max(1, height)
                 fillMode: Image.PreserveAspectFit
                 verticalAlignment: Image.AlignTop
                 asynchronous: true

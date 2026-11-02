@@ -173,6 +173,67 @@ test("parseHistory ignores corrupt JSON and empty text", () => {
   assert.strictEqual(H.parseHistory('[{"type":"text","text":"ok","pinned":true}]')[0].pinned, true)
 })
 
+test("displayRows never previews a copied file's original image path", () => {
+  const rows = H.displayRows([
+    { type: "text", text: "file:///home/user/Downloads/shared.png" },
+    { type: "text", text: "file:///home/user/Downloads/shared.png", preview: "/home/user/Downloads/shared.png" }
+  ], "", 50)
+  assert.strictEqual(rows[0].entryType, "file")
+  assert.strictEqual(rows[0].previewImage, "")
+  assert.strictEqual(rows[0].path, "/home/user/Downloads/shared.png")
+})
+
+test("file entries preview only through their managed, sanitized copy", () => {
+  const managed = imageDir + "/" + managedPng
+  const entry = H.normalizeEntry({ type: "text", text: "file:///srv/share/a.png", preview: managed })
+  assert.strictEqual(entry.preview, managed)
+  const rows = H.displayRows([entry], "", 50)
+  assert.strictEqual(rows[0].previewImage, managed)
+  assert.strictEqual(rows[0].path, "/srv/share/a.png")
+
+  // Foreign, traversal, or non-previewable preview values are discarded.
+  for (const bad of ["/srv/share/a.png", imageDir + "/../" + managedPng, imageDir + "/" + "c".repeat(64) + ".webp", 7]) {
+    const e = H.normalizeEntry({ type: "text", text: "file:///srv/share/a.png", preview: bad })
+    assert.strictEqual(e.preview, undefined)
+  }
+})
+
+test("image entries preview only when capture.sh sanitized them", () => {
+  const managed = imageDir + "/" + managedPng
+  const legacy = H.displayRows([{ type: "image", path: managed, mime: "image/png" }], "", 50)
+  assert.strictEqual(legacy[0].previewImage, "")
+  const safe = H.normalizeEntry({ type: "image", path: managed, mime: "image/png", safePreview: true })
+  assert.strictEqual(safe.safePreview, true)
+  assert.strictEqual(H.displayRows([safe], "", 50)[0].previewImage, managed)
+  const foreign = H.displayRows([{ type: "image", path: "/tmp/x.png", safePreview: true }], "", 50)
+  assert.strictEqual(foreign[0].previewImage, "")
+  const webp = H.displayRows([{ type: "image", path: imageDir + "/" + "d".repeat(64) + ".webp", safePreview: true }], "", 50)
+  assert.strictEqual(webp[0].previewImage, "")
+})
+
+test("previews must live in the canonical clipboard-images directory", () => {
+  const elsewhere = "/tmp/evil/clipboard-images/" + managedPng
+  const rows = H.displayRows([
+    { type: "image", path: elsewhere, mime: "image/png", safePreview: true },
+    { type: "text", text: "file:///srv/share/a.png", preview: elsewhere },
+    { type: "image", path: imageDir + "/" + managedPng, mime: "image/png", safePreview: true }
+  ], "", 50, imageDir)
+  const byPath = {}
+  for (const r of rows) byPath[r.entryType + ":" + r.path] = r.previewImage
+  assert.strictEqual(byPath["image:" + elsewhere], "")
+  assert.strictEqual(byPath["file:/srv/share/a.png"], "")
+  assert.strictEqual(byPath["image:" + imageDir + "/" + managedPng], imageDir + "/" + managedPng)
+  assert.strictEqual(H.imagePreviewPath({ type: "image", path: elsewhere, safePreview: true }, imageDir), "")
+  assert.strictEqual(H.imagePreviewPath({ type: "image", path: imageDir + "/" + managedPng, safePreview: true }, imageDir + "/"), imageDir + "/" + managedPng)
+})
+
+test("orphanedManagedImageNames tracks file-preview copies too", () => {
+  const managed = imageDir + "/" + managedPng
+  const file = { type: "text", text: "file:///srv/a.png", preview: managed }
+  assert.deepStrictEqual(H.orphanedManagedImageNames([file], []), [managedPng])
+  assert.deepStrictEqual(H.orphanedManagedImageNames([file], [file]), [])
+})
+
 test("Clipboard.qml forces plain text on every Text element", () => {
   const qml = fs.readFileSync(path.join(__dirname, "../Clipboard.qml"), "utf8")
   const texts = qml.match(/^\s*Text\s*\{/gm)

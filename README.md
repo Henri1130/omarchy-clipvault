@@ -20,8 +20,9 @@ ClipVault is a drop-in replacement for the built-in `omarchy.clipboard` overlay.
 - Shares the stock plugin's history file; pasting goes through the plugin's own `paste.sh`, which copies the exact entry and pastes it back into the window you were working in
 - Reliable mouse use: clicks on a row always paste that row, scrolling is smooth, and pinning or deleting does not make the list jump
 - History and screenshot files are private (`600` / `700`); history is written under `umask 077` so a save never leaves the file world-readable; pasted text is shown as plain text, not HTML
-- Oversized clipboard payloads are dropped (1 MiB text, 10 MiB per image) before they are decoded, stored, or loaded into the overlay
+- Oversized clipboard payloads are dropped (1 MiB text, 50 MiB per image) before they are decoded, stored, or loaded into the overlay
 - Stored clipboard images are capped at 64 MiB in total; evicted, deleted, and cleared image files are removed from the cache. Only plugin-created files under `clipboard-images/` are ever deleted.
+- Image previews only ever load a sanitized, plugin-owned copy: PNG/JPEG clips and copied image files are checked (50 MiB, 16384 px per side, 50 MP), re-written without text/EXIF/ICC/metadata chunks into `clipboard-images/`, and malformed files are rejected. The original file path of a copied file is never handed to Qt; other formats are stored but not previewed.
 
 ## Install
 
@@ -95,6 +96,7 @@ node tests/test_clipboard_history.js
 bash tests/test_save_history.sh
 bash tests/test_capture_limits.sh
 bash tests/test_image_store.sh
+bash tests/test_image_sanitize.sh
 node tests/test_mouse_paste.js
 bash tests/test_paste_helper.sh
 ```
@@ -106,10 +108,14 @@ Provided by Omarchy; nothing extra to install:
 - `wl-clipboard` (`wl-paste` / `wl-copy`)
 - `wtype` and `hyprctl` (paste and refocus)
 - `jq`
+- `perl` (core modules only; image sanitizing)
 - `setpriv` (util-linux)
 - Quickshell / Qt image support
 
 ## Changelog
+
+### 1.4.3
+- Security: image previews never load the original file of a copied image or any non-plugin path. PNG/JPEG clips and copied PNG/JPEG files are validated (50 MiB, 16384 px per side, 50 MP, CRC/structure) and re-written by `sanitize-image.pl` into a metadata-free managed copy; only that copy is shown. Malformed images are dropped; other image formats and entries from older versions are kept but not previewed. The overlay additionally refuses any preview path that is not exactly `<state>/omarchy/clipboard-images/<sha256>.png|jpg`. A single image up to 50 MiB fits the 64 MiB store; the next large image evicts the oldest stored file, never the one just copied.
 
 ### 1.4.2
 - The header search is now a real text box: click it for a caret, select text with the mouse, edit anywhere in the filter. Typing right after opening still filters, and arrow/Page/Home/End/Enter/Esc/Delete/Alt+P keep driving the list.

@@ -15,7 +15,13 @@ function normalizeEntry(value) {
   if (type === "text") {
     var text = String(value.text || "")
     if (text.length > maxTextChars) return null
-    return text.trim().length > 0 ? { type: "text", text: text, pinned: !!value.pinned } : null
+    if (text.trim().length === 0) return null
+    var textEntry = { type: "text", text: text, pinned: !!value.pinned }
+    // Copied image files carry a sanitized managed copy made by capture.sh.
+    // Only that copy may ever be shown; anything else is dropped here.
+    if (typeof value.preview === "string" && previewableManagedImage(value.preview))
+      textEntry.preview = value.preview
+    return textEntry
   }
 
   if (type === "image") {
@@ -29,6 +35,7 @@ function normalizeEntry(value) {
     }
     if (value.capturedAt !== undefined && value.capturedAt !== null)
       entry.capturedAt = String(value.capturedAt)
+    if (value.safePreview === true) entry.safePreview = true
     return entry
   }
 
@@ -58,26 +65,61 @@ function managedImageName(path) {
   return name
 }
 
+// Qt Image only ever loads files that sanitize-image.pl wrote: a managed
+// <sha256>.png/.jpg under clipboard-images/. Original copied files, other
+// formats, and entries from older versions get no thumbnail.
+function previewableManagedImage(path) {
+  var name = managedImageName(path)
+  return !!name && /\.(png|jpg|jpeg)$/.test(name) && String(path).indexOf("/") >= 0
+}
+
+// With imageDir (the canonical clipboard-images directory), the preview must
+// be exactly imageDir/<name>; a look-alike clipboard-images dir elsewhere is
+// refused.
+function inImageDir(path, imageDir) {
+  if (imageDir === undefined || imageDir === null || imageDir === "") return true
+  var dir = String(imageDir).replace(/\/+$/, "")
+  return String(path) === dir + "/" + managedImageName(path)
+}
+
+function imagePreviewPath(entry, imageDir) {
+  if (!entry) return ""
+  var candidate = ""
+  if (entry.type === "image" && entry.safePreview) candidate = entry.path
+  else if (entry.type === "text" && entry.preview) candidate = entry.preview
+  if (!candidate || !previewableManagedImage(candidate) || !inImageDir(candidate, imageDir)) return ""
+  return String(candidate)
+}
+
+// Managed files an entry owns: an image's stored copy or a file's preview.
+function managedNamesOf(entry) {
+  var names = []
+  if (!entry) return names
+  var candidate = entry.type === "image" ? entry.path : (entry.type === "text" ? entry.preview : "")
+  var name = managedImageName(candidate)
+  if (name) names.push(name)
+  return names
+}
+
 function orphanedManagedImageNames(before, after) {
   var keep = {}
   var afterVals = Array.isArray(after) ? after : []
   for (var i = 0; i < afterVals.length; i++) {
-    var kept = normalizeEntry(afterVals[i])
-    if (!kept || kept.type !== "image") continue
-    var keptName = managedImageName(kept.path)
-    if (keptName) keep[keptName] = true
+    var keptNames = managedNamesOf(normalizeEntry(afterVals[i]))
+    for (var k = 0; k < keptNames.length; k++) keep[keptNames[k]] = true
   }
 
   var names = []
   var seen = {}
   var beforeVals = Array.isArray(before) ? before : []
   for (var j = 0; j < beforeVals.length; j++) {
-    var old = normalizeEntry(beforeVals[j])
-    if (!old || old.type !== "image") continue
-    var name = managedImageName(old.path)
-    if (!name || keep[name] || seen[name]) continue
-    seen[name] = true
-    names.push(name)
+    var oldNames = managedNamesOf(normalizeEntry(beforeVals[j]))
+    for (var m = 0; m < oldNames.length; m++) {
+      var name = oldNames[m]
+      if (keep[name] || seen[name]) continue
+      seen[name] = true
+      names.push(name)
+    }
   }
   return names
 }
@@ -249,10 +291,6 @@ function fileName(path) {
   return parts.length > 0 ? parts[parts.length - 1] : String(path || "")
 }
 
-function isImagePath(path) {
-  return /\.(png|jpe?g|webp|gif|bmp|tiff?)$/i.test(String(path || ""))
-}
-
 function fileEntryText(entry) {
   var paths = filePaths(entry)
   if (paths.length === 0) return ""
@@ -295,14 +333,16 @@ function cappedEntry(entry) {
 
   // Cut on a line break so a file:// URI never truncates into a bogus path.
   var cut = entry.text.lastIndexOf("\n", displayTextLimit)
-  return {
+  var capped = {
     type: "text",
     text: entry.text.slice(0, cut > 0 ? cut : displayTextLimit),
     pinned: !!entry.pinned
   }
+  if (entry.preview) capped.preview = entry.preview
+  return capped
 }
 
-function displayRows(history, query, limit) {
+function displayRows(history, query, limit, imageDir) {
   var values = Array.isArray(history) ? history : []
   var needle = String(query || "").trim().toLowerCase()
   var max = limit === undefined || limit === null ? 50 : Number(limit)
@@ -331,7 +371,8 @@ function displayRows(history, query, limit) {
       if (hay.toLowerCase().indexOf(needle) < 0) continue
     }
 
-    var previewPath = isImage ? String(entry.path || "") : (isFile && paths.length === 1 && isImagePath(paths[0]) ? paths[0] : "")
+    // Never the copied file itself: see imagePreviewPath.
+    var previewPath = isImage || (isFile && paths.length === 1) ? imagePreviewPath(entry, imageDir) : ""
     rows.push({
       entryType: isFile ? "file" : entry.type,
       fullText: isImage ? "" : (isFile ? paths.join("\n") : String(entry.text || "")),
@@ -394,6 +435,8 @@ if (typeof module !== "undefined") {
     limitHistory: limitHistory,
     managedImageName: managedImageName,
     managedImageNamePattern: managedImageNamePattern,
+    previewableManagedImage: previewableManagedImage,
+    imagePreviewPath: imagePreviewPath,
     orphanedManagedImageNames: orphanedManagedImageNames,
     removeEntryAt: removeEntryAt,
     togglePinAt: togglePinAt,

@@ -7,6 +7,11 @@
 # Oversize clips are dropped, not truncated. Caps apply before text is decoded
 # or JSON-encoded and before an image is persisted. Distinct images are also
 # bounded by a 64 MiB total store; prune-images.sh evicts oldest managed files.
+#
+# The overlay only ever previews files written by sanitize-image.pl: PNG and
+# JPEG clips are re-written into a size/dimension-checked, metadata-free
+# managed copy, and a copied image *file* (file:// URI) gets such a copy as its
+# "preview". The original file path is never handed to Qt.
 
 set -o pipefail
 umask 077
@@ -16,11 +21,13 @@ STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy"
 IMAGE_DIR="$STATE_DIR/clipboard-images"
 HISTORY="$STATE_DIR/clipboard-history.json"
 TEXT_MAX=1048576
-IMAGE_MAX=10485760
+IMAGE_MAX=52428800
 JSON_MAX=2097152
 TYPES_MAX=4096
 INGEST_TIMEOUT=2
 PRUNE="$SCRIPT_DIR/prune-images.sh"
+SANITIZE="$SCRIPT_DIR/sanitize-image.pl"
+export CLIPVAULT_IMAGE_MAX="$IMAGE_MAX"
 
 mkdir -p "$IMAGE_DIR"
 chmod 700 "$IMAGE_DIR" 2>/dev/null || true
@@ -72,10 +79,46 @@ emit_image() {
   tmp=$(mktemp --tmpdir="$IMAGE_DIR" clipboard.XXXXXX) || return 0
   read_capped "$tmp" "$IMAGE_MAX" || return 0
 
-  hash=$(sha256sum "$tmp" | awk '{print $1}')
+  local safe=false
+  case "$mime" in
+  image/png | image/jpeg)
+    # Malformed or out-of-bounds PNG/JPEG clips are dropped, not stored.
+    local clean
+    clean=$(sanitized_copy "$tmp") || { rm -f "$tmp"; return 0; }
+    rm -f "$tmp"
+    tmp=${clean%:*}
+    ext=${clean##*:}
+    [[ $ext == jpg ]] && mime=image/jpeg || mime=image/png
+    safe=true
+    ;;
+  esac
+
+  file=$(store_managed "$tmp" "$ext") || return 0
+
+  jq -cn --arg mime "$mime" --arg path "$file" --arg captured_at "$(date +'%A %H:%M')" --argjson safe "$safe" \
+    '{type:"image", mime:$mime, path:$path, capturedAt:$captured_at} + (if $safe then {safePreview:true} else {} end)'
+}
+
+# sanitized_copy SRC -> prints "<tmpfile>:<ext>" of a sanitized copy in IMAGE_DIR.
+sanitized_copy() {
+  local src="$1" out ext
+  [[ -x $SANITIZE ]] || return 1
+  out=$(mktemp --tmpdir="$IMAGE_DIR" clipboard.XXXXXX) || return 1
+  if ! ext=$(timeout "$INGEST_TIMEOUT"s "$SANITIZE" "$src" "$out" 2>/dev/null) || [[ $ext != png && $ext != jpg ]]; then
+    rm -f "$out"
+    return 1
+  fi
+  printf '%s:%s' "$out" "$ext"
+}
+
+# store_managed TMP EXT -> moves TMP to IMAGE_DIR/<sha256>.<ext>, prints path.
+store_managed() {
+  local tmp="$1" ext="$2" hash file
+  hash=$(sha256sum "$tmp" | awk '{print $1}') || { rm -f "$tmp"; return 1; }
   file="$IMAGE_DIR/$hash.$ext"
   if [[ -e $file ]]; then
     rm -f "$tmp"
+    touch -- "$file" 2>/dev/null || true
   else
     mv "$tmp" "$file"
   fi
@@ -85,9 +128,29 @@ emit_image() {
   if [[ -x $PRUNE ]]; then
     "$PRUNE" --budget "${file##*/}" || true
   fi
+  printf '%s' "$file"
+}
 
-  jq -cn --arg mime "$mime" --arg path "$file" --arg captured_at "$(date +'%A %H:%M')" \
-    '{type:"image", mime:$mime, path:$path, capturedAt:$captured_at}'
+# file_preview TEXTFILE -> for a clip that is exactly one file:// URI naming a
+# PNG/JPEG, print the path of a sanitized managed preview copy.
+file_preview() {
+  local raw="$1" src clean
+  (( $(stat -c '%s' -- "$raw" 2>/dev/null || echo 0) <= 4096 )) || return 1
+  src=$(
+    perl -e '
+      binmode STDIN;
+      my $raw = do { local $/; <STDIN> };
+      exit 1 unless $raw =~ m{\Afile://(?:localhost)?(/[^\r\n\0]*)\r?\n?\z};
+      my $p = $1;
+      $p =~ s/%([0-9A-Fa-f]{2})/chr(hex($1))/ge;
+      exit 1 if $p =~ /\0/ || $p !~ /\.(?:png|jpe?g)\z/i;
+      print $p;
+    ' <"$raw"
+  ) || return 1
+  [[ -f $src ]] || return 1
+  (( $(stat -L -c '%s' -- "$src" 2>/dev/null || echo 0) <= IMAGE_MAX )) || return 1
+  clean=$(sanitized_copy "$src") || return 1
+  store_managed "${clean%:*}" "${clean##*:}"
 }
 
 emit_text() {
@@ -144,7 +207,15 @@ emit_text() {
       print "{\"type\":\"text\",\"text\":", encode_json($text), "}\n";
     ' <"$tmp"
   ) || true
+
+  local preview=""
+  if [[ $json == '{"type":"text","text":"file://'* ]]; then
+    preview=$(file_preview "$tmp") || preview=""
+  fi
   rm -f "$tmp"
+  if [[ -n $preview ]]; then
+    json=$(jq -c --arg p "$preview" '. + {preview:$p}' <<<"$json") || json=""
+  fi
 
   local json_bytes
   json_bytes=$(printf '%s' "$json" | wc -c)

@@ -43,7 +43,9 @@ referenced_names() {
     if is_managed_name "$name"; then
       printf '%s\n' "$name"
     fi
-  done < <(jq -r '.[] | select(type=="object" and .type=="image" and (.path|type=="string")) | .path' "$HISTORY" 2>/dev/null)
+  done < <(jq -r '.[] | select(type=="object")
+    | (select(.type=="image") | .path), (select(.type=="text") | .preview)
+    | select(type=="string")' "$HISTORY" 2>/dev/null)
 }
 
 budget_prune() {
