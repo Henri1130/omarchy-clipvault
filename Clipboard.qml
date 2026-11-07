@@ -84,7 +84,7 @@ Item {
     root.cursorActive = true
     root.disarmPointer()
     root.rebuildDisplay()
-    Qt.callLater(function() { root.focusSearch() })
+    Qt.callLater(function() { if (root && typeof root.focusSearch === "function") root.focusSearch() })
   }
 
   // Keyboard focus lives in the header search box so its caret and mouse text
@@ -244,7 +244,7 @@ Item {
   function cancelClearHistory() {
     root.clearConfirmOpen = false
     root.disarmPointer()
-    Qt.callLater(function() { root.focusSearch() })
+    Qt.callLater(function() { if (root && typeof root.focusSearch === "function") root.focusSearch() })
   }
 
   function confirmClearHistory() {
@@ -256,7 +256,7 @@ Item {
     root.disarmPointer()
     root.clearConfirmOpen = false
     root.rebuildDisplay()
-    Qt.callLater(function() { root.focusSearch() })
+    Qt.callLater(function() { if (root && typeof root.focusSearch === "function") root.focusSearch() })
   }
 
   function removeDisplayIndex(index) {
