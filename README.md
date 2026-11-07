@@ -114,6 +114,9 @@ Provided by Omarchy; nothing extra to install:
 
 ## Changelog
 
+### 1.4.4
+- Fix for Omarchy 4.5: deferred search-focus calls are guarded, so reloading or restarting the shell no longer logs a `TypeError` from the clipboard overlay.
+
 ### 1.4.3
 - Security: image previews never load the original file of a copied image or any non-plugin path. PNG/JPEG clips and copied PNG/JPEG files are validated (50 MiB, 16384 px per side, 50 MP, CRC/structure) and re-written by `sanitize-image.pl` into a metadata-free managed copy; only that copy is shown. Malformed images are dropped; other image formats and entries from older versions are kept but not previewed. The overlay additionally refuses any preview path that is not exactly `<state>/omarchy/clipboard-images/<sha256>.png|jpg`. A single image up to 50 MiB fits the 64 MiB store; the next large image evicts the oldest stored file, never the one just copied.
 
